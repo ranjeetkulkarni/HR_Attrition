@@ -2,94 +2,110 @@ from flask import Flask, request, jsonify, render_template
 import numpy as np
 import pandas as pd
 import pickle
+import logging
+import os
 
 app = Flask(__name__)
-xgb_model = pickle.load(open('xgb_classifier.pkl', 'rb'))
-scaler=pickle.load(open('scaling.pkl','rb'))
 
-# Load the scaler if it was saved; adjust path as necessary
-# scaler = pickle.load(open('scaler.pkl', 'rb'))  # Uncomment if you have a saved scaler
+# Configure logging
+logging.basicConfig(level=logging.DEBUG)
+
+# Load the model and scaler with error handling
+try:
+    xgb_model = pickle.load(open('xgb_classifier.pkl', 'rb'))
+    scaler = pickle.load(open('scaling.pkl', 'rb'))
+except FileNotFoundError as e:
+    logging.error(f"Model or scaler file not found: {e}")
+    raise
+
+# Function to preprocess data
+def preprocess_data(df):
+    # Drop unnecessary columns
+    df.drop(['EmployeeCount', 'StandardHours'], axis=1, inplace=True, errors='ignore')
+    
+    # Feature transformations
+    company_worked_mapping = {0: 0, 1: 1, 2: 3, 3: 3, 4: 3, 5: 6, 6: 6, 7: 6, 8: 9, 9: 9}
+    df['NumCompaniesWorked_Category'] = df['NumCompaniesWorked'].map(company_worked_mapping)
+    df.drop('NumCompaniesWorked', axis=1, inplace=True, errors='ignore')
+    df.rename(columns={'NumCompaniesWorked_Category': 'NumCompaniesWorked'}, inplace=True)
+
+    salary_hike_mapping = {11: 12, 12: 14, 13: 14, 14: 15, 15: 16, 16: 18, 17: 18, 18: 18, 
+                           19: 18, 20: 21, 21: 21, 22: 21, 23: 24, 24: 24, 25: 24}
+    df['PercentSalaryHike_Category'] = df['PercentSalaryHike'].map(salary_hike_mapping)
+    df.drop('PercentSalaryHike', axis=1, inplace=True, errors='ignore')
+    df.rename(columns={'PercentSalaryHike_Category': 'PercentSalaryHike'}, inplace=True)
+
+    # Log transformation for specific features
+    for feature in ['MonthlyIncome', 'DistanceFromHome']:
+        df[feature] = np.log1p(df[feature])
+
+    df.drop(['EmployeeNumber', 'Over18', 'Gender', 'Department'], axis=1, inplace=True, errors='ignore')
+
+    # One-hot encoding for categorical features
+    categorical_features = ['BusinessTravel', 'EducationField', 'JobRole', 'MaritalStatus', 'OverTime']
+    df_encoded = pd.get_dummies(df, columns=categorical_features, drop_first=True)
+
+    # Apply scaling
+    numerical_features = df_encoded.select_dtypes(include=[np.number]).columns.tolist()
+    df_encoded[numerical_features] = scaler.transform(df_encoded[numerical_features])
+
+    return df_encoded
 
 @app.route('/')
 def home():
     return render_template('home.html')
 
-@app.route('/hr/predict', methods=['POST'])
-def predict_api():
-    data = request.json['data']
-    df_hr = pd.DataFrame([data])
-    
-    df_hr.drop(['EmployeeCount', 'StandardHours'], axis=1, inplace=True, errors='ignore')
-    
-    numerical_features = [feature for feature in df_hr.columns if df_hr[feature].dtypes != 'O']
-    categorical_features = [
-        'Attrition', 'BusinessTravel', 'Department', 'EducationField', 
-        'Gender', 'JobRole', 'MaritalStatus', 'Over18', 'OverTime'
-    ]
-    
-    year_feature = [
-        'TotalWorkingYears', 'TrainingTimesLastYear', 'YearsAtCompany',
-        'YearsInCurrentRole', 'YearsSinceLastPromotion', 'YearsWithCurrManager'
-    ]
-    
-    discrete_feature = [
-        'Education', 'EmployeeCount', 'EnvironmentSatisfaction', 
-        'JobInvolvement', 'JobLevel', 'JobSatisfaction', 'NumCompaniesWorked',
-        'PercentSalaryHike', 'PerformanceRating', 'RelationshipSatisfaction', 
-        'StandardHours', 'StockOptionLevel', 'WorkLifeBalance'
-    ]
-    
-    continuous_feature = [
-        'EmployeeNumber', 'Age', 'DailyRate', 'DistanceFromHome', 
-        'HourlyRate', 'MonthlyIncome', 'MonthlyRate'
-    ]
+@app.route('/predict', methods=['POST'])
+def predict():
+    try:
+        input_data = {
+            'EmployeeNumber': int(request.form.get('EmployeeNumber')),
+            'Age': int(request.form.get('Age')),
+            'BusinessTravel': request.form.get('BusinessTravel'),
+            'DailyRate': int(request.form.get('DailyRate')),
+            'Department': request.form.get('Department'),
+            'DistanceFromHome': int(request.form.get('DistanceFromHome')),
+            'Education': int(request.form.get('Education')),
+            'EducationField': request.form.get('EducationField'),
+            'EmployeeCount': int(request.form.get('EmployeeCount')),
+            'EnvironmentSatisfaction': int(request.form.get('EnvironmentSatisfaction')),
+            'Gender': request.form.get('Gender'),
+            'HourlyRate': int(request.form.get('HourlyRate')),
+            'JobInvolvement': int(request.form.get('JobInvolvement')),
+            'JobLevel': int(request.form.get('JobLevel')),
+            'JobRole': request.form.get('JobRole'),
+            'JobSatisfaction': int(request.form.get('JobSatisfaction')),
+            'MaritalStatus': request.form.get('MaritalStatus'),
+            'MonthlyIncome': int(request.form.get('MonthlyIncome')),
+            'MonthlyRate': int(request.form.get('MonthlyRate')),
+            'NumCompaniesWorked': int(request.form.get('NumCompaniesWorked')),
+            'Over18': request.form.get('Over18'),
+            'OverTime': request.form.get('OverTime'),
+            'PercentSalaryHike': int(request.form.get('PercentSalaryHike')),
+            'PerformanceRating': int(request.form.get('PerformanceRating')),
+            'RelationshipSatisfaction': int(request.form.get('RelationshipSatisfaction')),
+            'StandardHours': int(request.form.get('StandardHours')),
+            'StockOptionLevel': int(request.form.get('StockOptionLevel')),
+            'TotalWorkingYears': int(request.form.get('TotalWorkingYears')),
+            'TrainingTimesLastYear': int(request.form.get('TrainingTimesLastYear')),
+            'WorkLifeBalance': int(request.form.get('WorkLifeBalance')),
+            'YearsAtCompany': int(request.form.get('YearsAtCompany')),
+            'YearsInCurrentRole': int(request.form.get('YearsInCurrentRole')),
+            'YearsSinceLastPromotion': int(request.form.get('YearsSinceLastPromotion')),
+            'YearsWithCurrManager': int(request.form.get('YearsWithCurrManager'))
+        }
 
-    company_worked_mapping = {
-        0: 0, 1: 1, 2: 3, 3: 3, 4: 3, 5: 6, 6: 6, 7: 6, 8: 9, 9: 9
-    }
+        df_hr = pd.DataFrame([input_data])
+        df_encoded = preprocess_data(df_hr)
 
-    # Apply the mapping to the 'NumCompaniesWorked' column
-    df_hr['NumCompaniesWorked_Category'] = df_hr['NumCompaniesWorked'].map(company_worked_mapping)
-    df_hr.drop('NumCompaniesWorked', axis=1, inplace=True, errors='ignore')
-    df_hr.rename(columns={'NumCompaniesWorked_Category': 'NumCompaniesWorked'}, inplace=True)
+        # Make prediction
+        prediction = xgb_model.predict(df_encoded.values.reshape(1, -1))
+        prediction_label = "Yes" if prediction[0] == 1 else "No"
+        return render_template('home.html', prediction=prediction_label)
 
-    salary_hike_mapping = {
-        11: 12, 12: 14, 13: 14, 14: 15, 15: 16,
-        16: 18, 17: 18, 18: 18, 19: 18, 20: 21,
-        21: 21, 22: 21, 23: 24, 24: 24, 25: 24
-    }
-
-    # Apply the mapping to the 'PercentSalaryHike' column
-    df_hr['PercentSalaryHike_Category'] = df_hr['PercentSalaryHike'].map(salary_hike_mapping)
-    df_hr.drop('PercentSalaryHike', axis=1, inplace=True, errors='ignore')
-    df_hr.rename(columns={'PercentSalaryHike_Category': 'PercentSalaryHike'}, inplace=True)
-
-    for feature in ['MonthlyIncome', 'DistanceFromHome']:
-        df_hr[feature] = np.log1p(df_hr[feature])
-
-    df_hr.drop(['EmployeeNumber', 'Over18', 'Gender', 'Department'], axis=1, inplace=True, errors='ignore')
-
-    categorical_features = [
-        'Attrition', 'BusinessTravel', 'EducationField', 'JobRole', 
-        'MaritalStatus', 'OverTime'
-    ]
-
-    df_encoded = pd.get_dummies(df_hr, columns=[feature for feature in categorical_features if feature != 'Attrition'],
-                                 drop_first=True)  # One-hot encode features
-
-    df_encoded = df_encoded.replace({True: 1, False: 0})
-    df_encoded['Attrition'] = df_encoded['Attrition'].replace({'Yes': 1, 'No': 0})
-
-    numerical_features = df_encoded.select_dtypes(include=[np.number]).columns.tolist()
-
-    # Apply scaling if you have a scaler loaded
-    df_encoded[numerical_features] = scaler.transform(df_encoded[numerical_features])  # Uncomment if scaler is available
-    # Ensure the data is in array form for prediction
-    data_for_prediction = df_encoded.values.reshape(1, -1) if df_encoded.shape[0] == 1 else df_encoded.values
-    # Make prediction
-    prediction = xgb_model.predict(data_for_prediction)
-
-    return jsonify({'prediction': int(prediction[0])})
+    except Exception as e:
+        logging.error(f"Error during prediction: {e}")
+        return render_template('home.html', prediction="Error: " + str(e))
 
 if __name__ == '__main__':
-     app.run(debug=True, port=5001)
+    app.run(debug=True)
